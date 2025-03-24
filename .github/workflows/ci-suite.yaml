@@ -1,4 +1,4 @@
-name: Directory Lister Test Suite
+name: Directory Lister CI
 on: [push, pull_request, workflow_dispatch]
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
 
   coding-standards:
     name: Coding Standards
-    runs-on: 'ubuntu-latest'
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
@@ -48,7 +48,7 @@ jobs:
 
   static-analysis:
     name: Static Analysis
-    runs-on: 'ubuntu-latest'
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
@@ -68,7 +68,7 @@ jobs:
 
   tests:
     name: Tests
-    runs-on: 'ubuntu-latest'
+    runs-on: ubuntu-latest
 
     services:
       redis:
@@ -94,12 +94,12 @@ jobs:
 
       - name: Get Composer Cache Directory
         id: composer-cache
-        run: echo "::set-output name=dir::$(composer config cache-files-dir)"
+        run: echo "COMPOSER_CACHE_DIR=$(composer config cache-files-dir)" >> $GITHUB_ENV
 
       - name: Cache PHP Dependencies
         uses: actions/cache@v4
         with:
-          path: ${{ steps.composer-cache.outputs.dir }}
+          path: ${{ env.COMPOSER_CACHE_DIR }}
           key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
           restore-keys: ${{ runner.os }}-composer-
 
@@ -109,11 +109,51 @@ jobs:
       - name: Run Tests
         run: app/vendor/bin/phpunit --coverage-text
 
+  build-and-push-image:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
+    needs: [asset-compilation, coding-standards, static-analysis, tests]
+
+    env:
+      DOCKER_HUB_USER: phlak
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKER_HUB_USER }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Extract Metadata
+        id: extract-metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_HUB_USER }}/directory-lister
+          tags: |
+            type=semver,pattern={{major}}.{{minor}}.{{patch}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=ref,event=tag
+            type=raw,value=latest
+
+      - name: Build & Push Image
+        uses: docker/build-push-action@v6
+        with:
+          file: Dockerfile.prod
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.extract-metadata.outputs.tags }}
+          labels: ${{ steps.extract-metadata.outputs.labels }}
+
   release:
     name: Create Release
-    runs-on: 'ubuntu-latest'
+    runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     needs: [asset-compilation, coding-standards, static-analysis, tests]
+
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -122,8 +162,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Get Tag
-        id: vars
-        run: echo ::set-output name=tag::${GITHUB_REF#refs/*/}
+        run: echo "TAG=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
 
       - name: Build Artifact
         run: make artifacts
@@ -131,8 +170,8 @@ jobs:
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
-          name: v${{ steps.vars.outputs.tag }}
+          name: v${{ env.TAG }}
           draft: true
           files: |
-            artifacts/DirectoryLister-${{ steps.vars.outputs.tag }}.tar.gz
-            artifacts/DirectoryLister-${{ steps.vars.outputs.tag }}.zip
+            artifacts/DirectoryLister-${{ env.TAG }}.tar.gz
+            artifacts/DirectoryLister-${{ env.TAG }}.zip
